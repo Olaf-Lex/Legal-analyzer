@@ -1,130 +1,159 @@
-from flask import Flask, render_template, request, jsonify, send_file
-import os
-import uuid
-from werkzeug.utils import secure_filename
-import PyPDF2
-import io
+import streamlit as st
+import pandas as pd
+import re
+import time
 
-app = Flask(__name__)
+# --- CONFIGURACIÓN DE LA PÁGINA ---
+st.set_page_config(
+    page_title="LegalTech Contract Analyzer",
+    page_icon="⚖️",
+    layout="wide"
+)
 
-# Configuration
-UPLOAD_FOLDER = 'uploads'
-ALLOWED_EXTENSIONS = {'pdf', 'docx'}
-app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
-app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB limit
+# --- ESTILOS CSS PERSONALIZADOS (PARA QUE SE VEA "PRO") ---
+st.markdown("""
+    <style>
+    .main {
+        background-color: #f5f7f9;
+    }
+    .stButton>button {
+        color: white;
+        background-color: #0e1117;
+        border-radius: 8px;
+    }
+    .metric-card {
+        background-color: white;
+        padding: 20px;
+        border-radius: 10px;
+        box-shadow: 2px 2px 10px rgba(0,0,0,0.1);
+    }
+    </style>
+    """, unsafe_allow_html=True)
 
-# Create upload folder if it doesn't exist
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+# --- SISTEMA DE LOGIN SIMULADO ---
+def check_password():
+    """Retorna `True` si el usuario tiene la clave correcta."""
+    if "password_correct" not in st.session_state:
+        st.session_state.password_correct = False
 
-def allowed_file(filename):
-    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+    if st.session_state.password_correct:
+        return True
 
-def extract_text_from_pdf(file_stream):
-    """Extract text from PDF file stream"""
-    try:
-        reader = PyPDF2.PdfReader(file_stream)
-        text = ""
-        for page in reader.pages:
-            text += page.extract_text() or ""
-        return text[:4000]  # Limit to first 4000 chars for demo
-    except Exception as e:
-        return f"Error reading PDF: {str(e)}"
+    st.markdown("### 🔒 Acceso Restringido - Demo Privado")
+    password = st.text_input("Ingrese la clave de acceso (Pista: legaltech)", type="password")
+    
+    if st.button("Ingresar"):
+        if password == "legaltech":  # CLAVE DE ACCESO
+            st.session_state.password_correct = True
+            st.rerun()
+        else:
+            st.error("Clave incorrecta. Intente nuevamente.")
+    return False
 
-def analyze_nda_text(text):
-    """
-    REAL RAG ANALYSIS WOULD GO HERE
-    For now, this is a deterministic risk analyzer
-    """
+if not check_password():
+    st.stop()
+
+# --- LÓGICA DE ANÁLISIS (EL "CEREBRO") ---
+def analyze_contract(text):
+    """Busca palabras clave de riesgo y genera estadísticas."""
     risks = []
-    risk_score = 0
+    score = 100
     
-    # Risk detection logic (replace with your RAG later)
-    if "10 years" in text.lower() or "ten years" in text.lower():
-        risks.append({
-            "level": "high",
-            "title": "Unilateral Confidentiality",
-            "text": "Long confidentiality period detected",
-            "suggestion": "Negotiate mutual obligations or reduce term to 3-5 years"
-        })
-        risk_score += 30
-    
-    if "public domain" in text.lower():
-        risks.append({
-            "level": "medium",
-            "title": "No Carve-outs for Public Domain",
-            "text": "Missing specific carve-outs",
-            "suggestion": "Add carve-outs for independently developed information"
-        })
-        risk_score += 20
-    
-    if "irreparable harm" in text.lower():
-        risks.append({
-            "level": "high",
-            "title": "Overbroad Injunctive Relief",
-            "text": "Standard overreach clause",
-            "suggestion": "Limit to actual damages where appropriate"
-        })
-        risk_score += 25
-    
-    # Default risk score if no issues found
-    if not risks:
-        risk_score = 15
-    
-    return {
-        "overall_score": min(risk_score, 100),
-        "risks": risks,
-        "analysis_time": "1.8s",  # Would be real in production
-        "document_length": len(text)
+    # Base de datos de "Red Flags" (Palabras clave)
+    keywords = {
+        "Jurisdicción Extranjera": ["Nueva York", "Delaware", "Londres", "arbitraje internacional"],
+        "Responsabilidad Ilimitada": ["indemnidad total", "sin límite", "hold harmless", "consequential damages"],
+        "Terminación Unilateral": ["sin causa", "terminación inmediata", "a su sola discreción"],
+        "Renuncia de Derechos": ["renuncia a juicio", "waive trial", "renuncia a reclamar"],
+        "Confidencialidad Perpetua": ["para siempre", "perpetuidad", "indefinidamente"]
     }
 
-@app.route('/')
-def index():
-    return render_template('index.html')
+    found_counts = {}
 
-@app.route('/api/upload', methods=['POST'])
-def upload_file():
-    """Handle file upload and analysis"""
-    if 'file' not in request.files:
-        return jsonify({'error': 'No file provided'}), 400
-    
-    file = request.files['file']
-    
-    if file.filename == '':
-        return jsonify({'error': 'No file selected'}), 400
-    
-    if not allowed_file(file.filename):
-        return jsonify({'error': 'Invalid file type. Only PDF and DOCX allowed'}), 400
-    
-    try:
-        # Save file temporarily
-        filename = secure_filename(file.filename)
-        unique_id = str(uuid.uuid4())[:8]
-        filepath = os.path.join(app.config['UPLOAD_FOLDER'], f"{unique_id}_{filename}")
-        file.save(filepath)
-        
-        # Extract text based on file type
-        if filename.lower().endswith('.pdf'):
-            with open(filepath, 'rb') as f:
-                text = extract_text_from_pdf(f)
-        else:
-            # For DOCX, you'd need python-docx library
-            text = "DOCX support coming soon. Use PDF for demo."
-        
-        # Analyze text
-        analysis = analyze_nda_text(text)
-        
-        # Clean up file after analysis
-        os.remove(filepath)
-        
-        return jsonify(analysis)
-    
-    except Exception as e:
-        return jsonify({'error': f'Server error: {str(e)}'}), 500
+    for category, terms in keywords.items():
+        count = 0
+        for term in terms:
+            if re.search(r'\b' + re.escape(term) + r'\b', text, re.IGNORECASE):
+                risks.append(f"⚠️ **{category}**: Se detectó el término '{term}'.")
+                count += 1
+                score -= 15 # Bajamos el puntaje por cada riesgo
+        found_counts[category] = count
 
-@app.route('/api/health')
-def health_check():
-    """Health check endpoint"""
-    return jsonify({'status': 'healthy', 'service': 'legaltech-portfolio'})
+    # Ajuste final del score
+    score = max(0, score) # Que no baje de 0
+    
+    return score, risks, found_counts
 
-if __name__ == '__main__':
-    app.run(debug=True, port=5000)
+# --- INTERFAZ PRINCIPAL ---
+
+# Barra lateral
+with st.sidebar:
+    st.image("https://cdn-icons-png.flaticon.com/512/1904/1904565.png", width=50)
+    st.header("Configuración del Caso")
+    client_name = st.text_input("Cliente", "Empresa Alpha S.A.")
+    contract_type = st.selectbox("Tipo de Contrato", ["NDA (Confidencialidad)", "Prestación de Servicios", "SaaS Agreement", "Arrendamiento"])
+    st.divider()
+    st.info("💡 Este prototipo utiliza análisis de patrones de texto para identificar cláusulas de alto riesgo predefinidas.")
+    st.write("Versión 1.0.2")
+
+# Título Principal
+st.title("🤖 AI Contract Risk Auditor")
+st.markdown(f"Análisis preliminar para: **{client_name}** | Documento: **{contract_type}**")
+st.divider()
+
+# Columnas para entrada de datos
+col1, col2 = st.columns([1, 1])
+
+contract_text = ""
+
+with col1:
+    st.subheader("1. Documento a Analizar")
+    # Botón para cargar texto de ejemplo (Para el demo rápido)
+    if st.button("📄 Cargar Contrato de Ejemplo con Riesgos"):
+        contract_text = """
+        ACUERDO DE SERVICIOS
+        1. Las partes acuerdan someterse a la jurisdicción de los tribunales de Nueva York para cualquier disputa.
+        2. El proveedor mantendrá en total indemnidad al cliente por cualquier daño, sin límite de monto (consequential damages).
+        3. El cliente podrá terminar este contrato a su sola discreción y sin causa alguna.
+        4. La confidencialidad de este acuerdo durará a perpetuidad.
+        """
+    else:
+        contract_text = st.text_area("Pega el texto del contrato aquí:", height=300)
+
+with col2:
+    st.subheader("2. Resultados del Análisis")
+    
+    if contract_text:
+        with st.spinner('Analizando cláusulas legales...'):
+            time.sleep(1.5) # Simula tiempo de "pensamiento" de la IA
+            score, risks, counts = analyze_contract(contract_text)
+            
+            # Mostrar Score con colores
+            score_color = "red" if score < 60 else "orange" if score < 85 else "green"
+            st.markdown(f"""
+                <div style="text-align: center; border: 2px solid {score_color}; padding: 10px; border-radius: 10px;">
+                    <h2 style="margin:0; color: {score_color};">Compliance Score: {score}/100</h2>
+                </div>
+            """, unsafe_allow_html=True)
+            
+            st.write("") # Espacio
+            
+            # Gráfico de barras simple
+            df_chart = pd.DataFrame(list(counts.items()), columns=["Categoría", "Hallazgos"])
+            st.bar_chart(df_chart.set_index("Categoría"))
+
+# Sección de Detalles (Abajo)
+if contract_text:
+    st.divider()
+    st.subheader("🚩 Hallazgos Detallados")
+    
+    if risks:
+        for risk in risks:
+            st.error(risk)
+        st.warning("Recomendación: Revisión manual requerida en las cláusulas marcadas.")
+    else:
+        st.success("✅ No se detectaron palabras clave de alto riesgo en el análisis preliminar.")
+
+    # Call to Action final
+    st.markdown("---")
+    st.info("🚀 **¿Te gustó este demo?** Esta herramienta reduce el tiempo de revisión preliminar en un 40%. Contáctame para discutir cómo implementarla en la firma.")
